@@ -27,5 +27,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: gateway,health,info
+        include: gateway,health,info,metrics
 
+rate-limiter:
+  limit: 5
+  window-seconds: 60
