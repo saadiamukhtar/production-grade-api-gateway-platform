@@ -50,16 +50,31 @@ public class RedisRateLimiterService {
                 )
                                 // Step 3: Count how many requests remain in window
                 .then(redisTemplate.opsForZSet().size(redisKey))
-                                // Step 4: Decide whether to allow request
-                .flatMap(count -> {
-                    log.info("Current request count for key {} is {}", redisKey, count);
-                    if (count != null && count > properties.getLimit()) {
-                        return Mono.just(false);
-                    }
-                    return redisTemplate.expire(redisKey,
-                                    Duration.ofSeconds(properties.getWindowSeconds()))
-                            .thenReturn(true);
-                }));
+                                // Step 4: Apply rate limit decision
+                                .flatMap(count -> {
+
+                                    log.info("Current request count for key {} is {}", redisKey, count);
+
+                                    if (count != null && count > properties.getLimit()) {
+                                        log.warn("Rate limit exceeded for key {}", redisKey);
+                                        return Mono.just(false);
+                                    }
+
+                                    // Align TTL with sliding window
+                                    return redisTemplate.expire(
+                                            redisKey,
+                                            Duration.ofSeconds(properties.getWindowSeconds())
+                                    ).thenReturn(true);
+                                })
+
+                                // 🔥 Fail-Open Strategy
+                                .onErrorResume(ex -> {
+                                    log.error(
+                                            "Redis unavailable. Applying fail-open strategy. Allowing request.",
+                                            ex
+                                    );
+                                    return Mono.just(true);
+                                }));
         //NOTE- flatMap() is used when:
         //
         //Inside your transformation,
