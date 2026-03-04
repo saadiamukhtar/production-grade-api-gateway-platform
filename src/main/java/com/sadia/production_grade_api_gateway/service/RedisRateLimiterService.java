@@ -30,56 +30,53 @@ public class RedisRateLimiterService {
         this.properties = properties;
     }
 
-    public Mono<Boolean> isAllowed(String key){
+    public Mono<Boolean> isAllowed(String key) {
 
-        long now = Instant.now().toEpochMilli();
-        // Redis key for storing request timestamps per user/IP
-        String redisKey = "rate_limit:" + key;
-//        to handle concurrency, what if two request arrive at the same millisecond
-        String member= String.valueOf(now) + "-" + UUID.randomUUID();
-        // Step 1: Add current request timestamp to sorted set
-        return redisTemplate.opsForZSet()
-                .add(redisKey,member, now)
-                // Step 2: Remove timestamps older than window
-                .then(
-                        redisTemplate.opsForZSet()
-                                .removeRangeByScore(redisKey,   Range.closed(
-                                        0.0,
-                                        (double) (now - properties.getWindowSeconds() *1000L)
-                                )
-                )
-                                // Step 3: Count how many requests remain in window
-                .then(redisTemplate.opsForZSet().size(redisKey))
-                                // Step 4: Apply rate limit decision
-                                .flatMap(count -> {
+        return Mono.defer(() -> {
 
-                                    log.info("Current request count for key {} is {}", redisKey, count);
+            long now = Instant.now().toEpochMilli();
+            String redisKey = "rate_limit:" + key;
 
-                                    if (count != null && count > properties.getLimit()) {
-                                        log.warn("Rate limit exceeded for key {}", redisKey);
-                                        return Mono.just(false);
-                                    }
+            String member = now + "-" + UUID.randomUUID();
 
-                                    // Align TTL with sliding window
-                                    return redisTemplate.expire(
-                                            redisKey,
-                                            Duration.ofSeconds(properties.getWindowSeconds())
-                                    ).thenReturn(true);
-                                })
+            return redisTemplate.opsForZSet()
+                    .add(redisKey, member, now)
 
-                                // 🔥 Fail-Open Strategy
-                                .onErrorResume(ex -> {
-                                    log.error(
-                                            "Redis unavailable. Applying fail-open strategy. Allowing request.",
-                                            ex
-                                    );
-                                    return Mono.just(true);
-                                }));
-        //NOTE- flatMap() is used when:
-        //
-        //Inside your transformation,
-        //you are calling another async operation
-        //that returns a Mono.
+                    .then(redisTemplate.opsForZSet()
+                            .removeRangeByScore(
+                                    redisKey,
+                                    Range.closed(
+                                            0.0,
+                                            (double) (now - properties.getWindowSeconds() * 1000L)
+                                    )
+                            ))
 
+                    .then(redisTemplate.opsForZSet().size(redisKey))
+
+                    .flatMap(count -> {
+
+                        log.info("Current request count for key {} is {}", redisKey, count);
+
+                        if (count != null && count > properties.getLimit()) {
+                            log.warn("Rate limit exceeded for key {}", redisKey);
+                            return Mono.just(false);
+                        }
+
+                        return redisTemplate.expire(
+                                redisKey,
+                                Duration.ofSeconds(properties.getWindowSeconds())
+                        ).thenReturn(true);
+                    });
+
+        }).onErrorResume(ex -> {
+
+            log.error(
+                    "Redis unavailable. Applying fail-open strategy. Allowing request.",
+                    ex
+            );
+
+            return Mono.just(true);
+
+        });
     }
 }

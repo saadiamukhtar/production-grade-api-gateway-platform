@@ -31,23 +31,39 @@ public class RateLimitFilter implements GlobalFilter {
     }
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+
         log.info("RateLimitFilter executing for path: {}",
                 exchange.getRequest().getPath());
+
         totalRequests.increment();
+
         String clientIp = exchange.getRequest()
                 .getRemoteAddress()
                 .getAddress()
                 .getHostAddress();
 
         return rateLimiterService.isAllowed(clientIp)
+
                 .flatMap(allowed -> {
+
                     if (!allowed) {
+
                         rateLimitExceeded.increment();
-                        log.info("Rate limit exceeded for IP: {}", clientIp);
+                        log.warn("Rate limit exceeded for IP: {}", clientIp);
 
                         exchange.getResponse().setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
                         return exchange.getResponse().setComplete();
                     }
+
+                    return chain.filter(exchange);
+                })
+
+                // 🔥 FAIL OPEN
+                .onErrorResume(ex -> {
+
+                    log.error("Rate limiter failure. Applying fail-open strategy.", ex);
+
+                    // Allow request if rate limiter fails
                     return chain.filter(exchange);
                 });
     }
